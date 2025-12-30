@@ -12,12 +12,8 @@
 
 ## ✨ 核心功能 (Key Features)
 
-* 🚀 **无限并发 (Unlimited Concurrency)**
-* 采用 `CachedThreadPool` 线程池技术，自动根据系统负载调整线程，支持每秒处理成百上千个请求，**彻底告别卡顿**。
-
-
 * 🤖 **AI 智能分析 (AI-Powered Analysis)**
-* 集成 OpenAI 兼容接口（支持 GPT-4, Qwen/通义千问, DeepSeek 等）。
+* 集成 主流LLM api（支持 GPT-4, Qwen/通义千问, DeepSeek 等）。
 * 自动对请求数据进行**脱敏处理**，保护隐私。
 * AI 基于上下文深度分析越权风险，并给出置信度评分（例如：`存在越权 (95%)`）。
 
