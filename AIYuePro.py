@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 # ai_yue_pro.py
 # New Name: AiYue_Pro
-# Features: IDOR Detection + AI Analysis + Data Masking + Unlimited Concurrency
+# Features: IDOR Detection + Parameter Replacement + AI Analysis + Static Resource Filter + Unlimited Concurrency
 # Environment: Jython 2.7 + Burp Suite
 
 from burp import IBurpExtender, ITab, IHttpListener, IMessageEditorController, IExtensionStateListener, \
-    IBurpExtenderCallbacks
+    IBurpExtenderCallbacks, IParameter
 from java.awt import BorderLayout, Dimension, GridBagLayout, GridBagConstraints, Insets, Color, Font
 from javax.swing import (JSplitPane, JTabbedPane, JPanel, JLabel, JTable,
                          JScrollPane, JTextArea, JCheckBox, JButton, JTextField,
@@ -31,9 +31,10 @@ L_WHITELIST = u"\u57df\u540d\u767d\u540d\u5355 (\u5fc5\u586b)"
 L_WHITELIST_TIP = u"\u4f8b\u5982:\nexample.com\napi.test.com"
 
 L_FILTER_METHOD = u"\u8fc7\u6ee4HTTP\u65b9\u6cd5"
+L_FILTER_EXT = u"\u8fc7\u6ee4\u9759\u6001\u540e\u7f00 (\u5982 js,png)"
 L_FILTER_PATH = u"\u8fc7\u6ee4\u63a5\u53e3\u8def\u5f84"
 L_AUTH_CONFIG = u"\u8d8a\u6743: \u586b\u5199\u4f4e\u6743\u9650\u8ba4\u8bc1\u4fe1\u606f\uff08Cookie/Token\uff09"
-L_PARAM_CONFIG = u"\u53c2\u6570\u66ff\u6362: \u586b\u5199\u9700\u8981\u66ff\u6362\u7684\u53c2\u6570"
+L_PARAM_CONFIG = u"\u53c2\u6570\u66ff\u6362: \u586b\u5199\u9700\u8981\u66ff\u6362\u7684\u53c2\u6570 (\u6c34\u5e73\u8d8a\u6743)"
 L_UNAUTH_CONFIG = u"\u672a\u6388\u6743: \u5c06\u79fb\u9664\u4e0b\u5217\u8ba4\u8bc1\u4fe1\u606f"
 L_DEDUPLICATE = u"\u542f\u7528URL\u53bb\u91cd"
 
@@ -71,7 +72,7 @@ AI_SYSTEM_PROMPT = u"""# Role
 # Task
 我将提供两个 HTTP 响应数据给你：
 1. **[Baseline_Response]**: 原始高权限账号请求成功的响应（作为参照组）。
-2. **[Test_Response]**: 将认证信息（Cookie/Token）替换为低权限账号后，发送相同请求得到的响应（作为测试组）。
+2. **[Test_Response]**: 将认证信息（Cookie/Token）或请求参数替换为低权限账号后，发送相同请求得到的响应（作为测试组）。
 
 你的任务是分析 [Test_Response] 是否成功获取了本不该获取的高权限数据，从而判断是否存在越权漏洞。
 
@@ -114,6 +115,7 @@ class AiYueUI:
 
         self.txt_whitelist = None
         self.txt_filter_method = None
+        self.txt_filter_ext = None
         self.txt_filter_path = None
         self.txt_auth_headers = None
         self.txt_param_replace = None
@@ -162,110 +164,115 @@ class AiYueUI:
         config_panel = JPanel(GridBagLayout())
         config_panel.setBorder(BorderFactory.createEmptyBorder(5, 5, 5, 5))
         c = GridBagConstraints()
-        c.fill = GridBagConstraints.HORIZONTAL;
-        c.weightx = 1.0;
-        c.insets = Insets(3, 2, 3, 2);
+        c.fill = GridBagConstraints.HORIZONTAL
+        c.weightx = 1.0
+        c.insets = Insets(3, 2, 3, 2)
         c.gridx = 0
 
-        c.gridy = 0;
+        c.gridy = 0
         config_panel.add(JLabel(L_PLUGIN_NAME), c)
 
         c.gridy = 1
         panel_btns = JPanel(BorderLayout())
-        self.chk_enable = JCheckBox(L_ENABLE);
+        self.chk_enable = JCheckBox(L_ENABLE)
         self.chk_enable.setSelected(True)
-        self.chk_dedup = JCheckBox(L_DEDUPLICATE);
+        self.chk_dedup = JCheckBox(L_DEDUPLICATE)
         self.chk_dedup.setSelected(True)
         btn_clear = JButton(L_CLEAR)
         btn_clear.addActionListener(self._controller.action_clear)
-        left_btns = JPanel();
-        left_btns.add(self.chk_enable);
+        left_btns = JPanel()
+        left_btns.add(self.chk_enable)
         left_btns.add(self.chk_dedup)
-        panel_btns.add(left_btns, BorderLayout.WEST);
+        panel_btns.add(left_btns, BorderLayout.WEST)
         panel_btns.add(btn_clear, BorderLayout.EAST)
         config_panel.add(panel_btns, c)
 
-        c.gridy = 2;
+        c.gridy = 2
         config_panel.add(JLabel(L_WHITELIST), c)
-        c.gridy = 3;
-        self.txt_whitelist = JTextArea(2, 20);
-        self.txt_whitelist.setText("");
-        self.txt_whitelist.setBorder(BorderFactory.createEtchedBorder());
-        self.txt_whitelist.setToolTipText(L_WHITELIST_TIP);
-        ToolTipManager.sharedInstance().registerComponent(self.txt_whitelist);
+        c.gridy = 3
+        self.txt_whitelist = JTextArea(2, 20)
+        self.txt_whitelist.setText("")
+        self.txt_whitelist.setBorder(BorderFactory.createEtchedBorder())
+        self.txt_whitelist.setToolTipText(L_WHITELIST_TIP)
+        ToolTipManager.sharedInstance().registerComponent(self.txt_whitelist)
         config_panel.add(JScrollPane(self.txt_whitelist), c)
 
-        c.gridy = 4;
+        c.gridy = 4
         config_panel.add(JLabel(L_FILTER_METHOD), c)
-        c.gridy = 5;
-        self.txt_filter_method = JTextField("OPTIONS,HEAD,Css,Js,Jpg,Png,Woff,Svg,Gif");
+        c.gridy = 5
+        self.txt_filter_method = JTextField("OPTIONS,HEAD")
         config_panel.add(self.txt_filter_method, c)
 
-        c.gridy = 6;
+        c.gridy = 6
+        config_panel.add(JLabel(L_FILTER_EXT), c)
+        c.gridy = 7
+        self.txt_filter_ext = JTextField("css,js,jpg,jpeg,png,gif,woff,woff2,svg,ico")
+        config_panel.add(self.txt_filter_ext, c)
+
+        c.gridy = 8
         config_panel.add(JLabel(L_FILTER_PATH), c)
-        c.gridy = 7;
-        self.txt_filter_path = JTextField("");
+        c.gridy = 9
+        self.txt_filter_path = JTextField("")
         config_panel.add(self.txt_filter_path, c)
 
-        c.gridy = 8;
+        c.gridy = 10
         config_panel.add(JLabel(L_AUTH_CONFIG), c)
-        c.gridy = 9;
-        self.txt_auth_headers = JTextArea(4, 20);
-        self.txt_auth_headers.setText("Cookie: session=low_priv_user\nAuthorization: Bearer low_priv_token");
-        self.txt_auth_headers.setBorder(BorderFactory.createEtchedBorder());
+        c.gridy = 11
+        self.txt_auth_headers = JTextArea(3, 20)
+        self.txt_auth_headers.setText("Cookie: session=low_priv_user\nAuthorization: Bearer low_priv_token")
+        self.txt_auth_headers.setBorder(BorderFactory.createEtchedBorder())
         config_panel.add(JScrollPane(self.txt_auth_headers), c)
 
-        c.gridy = 10;
+        c.gridy = 12
         config_panel.add(JLabel(L_PARAM_CONFIG), c)
-        c.gridy = 11;
-        self.txt_param_replace = JTextArea(2, 20);
-        self.txt_param_replace.setText("id=1");
-        self.txt_param_replace.setBorder(BorderFactory.createEtchedBorder());
+        c.gridy = 13
+        self.txt_param_replace = JTextArea(2, 20)
+        self.txt_param_replace.setText("id=2\nuid=1002")
+        self.txt_param_replace.setBorder(BorderFactory.createEtchedBorder())
         config_panel.add(JScrollPane(self.txt_param_replace), c)
 
-        c.gridy = 12;
+        c.gridy = 14
         config_panel.add(JLabel(L_UNAUTH_CONFIG), c)
-        c.gridy = 13;
-        self.txt_unauth_headers = JTextArea(3, 20);
-        self.txt_unauth_headers.setText("Cookie\nAuthorization\nToken");
-        self.txt_unauth_headers.setBorder(BorderFactory.createEtchedBorder());
+        c.gridy = 15
+        self.txt_unauth_headers = JTextArea(2, 20)
+        self.txt_unauth_headers.setText("Cookie\nAuthorization\nToken")
+        self.txt_unauth_headers.setBorder(BorderFactory.createEtchedBorder())
         config_panel.add(JScrollPane(self.txt_unauth_headers), c)
 
         # AI Config
-        c.gridy = 14
+        c.gridy = 16
         ai_panel = JPanel(GridBagLayout())
         ai_panel.setBorder(BorderFactory.createTitledBorder(L_AI_CONFIG))
         ac = GridBagConstraints()
-        ac.fill = GridBagConstraints.HORIZONTAL;
-        ac.weightx = 1.0;
-        ac.gridx = 0;
+        ac.fill = GridBagConstraints.HORIZONTAL
+        ac.weightx = 1.0
+        ac.gridx = 0
         ac.insets = Insets(2, 2, 2, 2)
 
-        ac.gridy = 0;
-        self.chk_ai_enable = JCheckBox(L_AI_ENABLE);
-        self.chk_ai_enable.setSelected(False);
+        ac.gridy = 0
+        self.chk_ai_enable = JCheckBox(L_AI_ENABLE)
+        self.chk_ai_enable.setSelected(False)
         ai_panel.add(self.chk_ai_enable, ac)
 
-        ac.gridy = 1;
+        ac.gridy = 1
         ai_panel.add(JLabel(L_API_URL), ac)
-        # Default API URL set to Qwen/Aliyun compatible endpoint as an example, but works with any OpenAI format
-        ac.gridy = 2;
-        self.txt_api_url = JTextField("https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions");
+        ac.gridy = 2
+        self.txt_api_url = JTextField("https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions")
         ai_panel.add(self.txt_api_url, ac)
 
-        ac.gridy = 3;
+        ac.gridy = 3
         ai_panel.add(JLabel(L_API_KEY), ac)
-        ac.gridy = 4;
-        self.txt_api_key = JTextField("");
+        ac.gridy = 4
+        self.txt_api_key = JTextField("")
         ai_panel.add(self.txt_api_key, ac)
 
-        ac.gridy = 5;
+        ac.gridy = 5
         ai_panel.add(JLabel(L_MODEL), ac)
-        ac.gridy = 6;
-        self.txt_model = JTextField("qwen-plus");
+        ac.gridy = 6
+        self.txt_model = JTextField("qwen-plus")
         ai_panel.add(self.txt_model, ac)
 
-        c.gridy = 15;
+        c.gridy = 17
         config_panel.add(ai_panel, c)
 
         config_scroll = JScrollPane(config_panel)
@@ -289,7 +296,7 @@ class AiYueUI:
             split = JSplitPane(JSplitPane.HORIZONTAL_SPLIT)
             split.setLeftComponent(req.getComponent())
             split.setRightComponent(res.getComponent())
-            split.setDividerLocation(0.5);
+            split.setDividerLocation(0.5)
             split.setResizeWeight(0.5)
             return split
 
@@ -302,13 +309,13 @@ class AiYueUI:
         top_split = JSplitPane(JSplitPane.HORIZONTAL_SPLIT)
         top_split.setLeftComponent(table_scroll)
         top_split.setRightComponent(config_scroll)
-        top_split.setDividerLocation(0.7);
+        top_split.setDividerLocation(0.7)
         top_split.setResizeWeight(0.7)
 
         self.main_panel = JSplitPane(JSplitPane.VERTICAL_SPLIT)
         self.main_panel.setTopComponent(top_split)
         self.main_panel.setBottomComponent(bottom_tabs)
-        self.main_panel.setDividerLocation(0.5);
+        self.main_panel.setDividerLocation(0.5)
         self.main_panel.setResizeWeight(0.5)
         self._callbacks.customizeUiComponent(self.main_panel)
 
@@ -318,16 +325,16 @@ class AiYueUI:
 
 class LogEntry:
     def __init__(self, id, url, method, origin_rr):
-        self._id = id;
-        self._url = url;
-        self._method = method;
+        self._id = id
+        self._url = url
+        self._method = method
         self._origin_rr = origin_rr
-        self._low_rr = None;
+        self._low_rr = None
         self._unauth_rr = None
-        self._len_origin = 0;
-        self._len_low = "...";
+        self._len_origin = 0
+        self._len_low = "..."
         self._len_unauth = "..."
-        self._ai_result = "";
+        self._ai_result = ""
         self._ai_detail = ""
 
 
@@ -368,13 +375,14 @@ class AnalysisColorRenderer(DefaultTableCellRenderer):
         c = super(AnalysisColorRenderer, self).getTableCellRendererComponent(table, value, isSelected, hasFocus, row,
                                                                              col)
         if isSelected:
-            c.setForeground(table.getSelectionForeground()); c.setBackground(table.getSelectionBackground())
+            c.setForeground(table.getSelectionForeground());
+            c.setBackground(table.getSelectionBackground())
         else:
-            c.setForeground(Color.BLACK); c.setBackground(Color.WHITE)
+            c.setForeground(Color.BLACK);
+            c.setBackground(Color.WHITE)
 
         if row < self._log.size():
             entry = self._log.get(row)
-            # Length coloring
             if col == COL_LEN_LOW or col == COL_LEN_UNAUTH:
                 if isinstance(entry._len_origin, int):
                     target_len = None
@@ -391,7 +399,6 @@ class AnalysisColorRenderer(DefaultTableCellRenderer):
                         else:
                             c.setForeground(Color.GREEN.darker());
                             c.setFont(c.getFont().deriveFont(Font.BOLD))
-            # AI coloring
             elif col == COL_AI:
                 val_str = str(value)
                 if u"True" in val_str or u"true" in val_str:
@@ -421,9 +428,7 @@ class AIService:
 
     def sanitize(self, text):
         if not text: return ""
-        # 截断过长文本 (取前1000字符)
         if len(text) > 1000: text = text[:1000] + "...[TRUNCATED]"
-        # 简单脱敏
         text = re.sub(r'\d{11}', '[PHONE]', text)
         text = re.sub(r'[\w\.-]+@[\w\.-]+\.\w+', '[EMAIL]', text)
         return text
@@ -493,7 +498,8 @@ class AIService:
 
 class AnalysisTask(Runnable):
     def __init__(self, controller, entry):
-        self._c = controller; self._e = entry
+        self._c = controller;
+        self._e = entry
 
     def run(self):
         try:
@@ -504,7 +510,7 @@ class AnalysisTask(Runnable):
             body = self._e._origin_rr.getRequest()[body_offset:]
             service = self._e._origin_rr.getHttpService()
 
-            # 1. Low
+            # 1. Low Privilege (认证替换 + 参数替换)
             low_headers = list(headers)
             auth_cfg = self._c._ui.txt_auth_headers.getText().strip()
             if auth_cfg:
@@ -513,7 +519,29 @@ class AnalysisTask(Runnable):
                     if ':' in line: k, v = line.split(':', 1); replacements[k.strip()] = v.strip()
                 low_headers = [h for h in low_headers if h.split(':', 1)[0].strip() not in replacements]
                 for k, v in replacements.items(): low_headers.append(k + ": " + v)
+
             new_req_low = helpers.buildHttpMessage(low_headers, body)
+
+            # ---> 核心修复: 执行参数替换逻辑 (用于水平越权测试) <---
+            param_cfg = self._c._ui.txt_param_replace.getText().strip()
+            if param_cfg:
+                param_replacements = {}
+                for line in param_cfg.split('\n'):
+                    if '=' in line:
+                        k, v = line.split('=', 1)
+                        param_replacements[k.strip()] = v.strip()
+
+                if param_replacements:
+                    req_info_temp = helpers.analyzeRequest(new_req_low)
+                    params = req_info_temp.getParameters()
+                    for p in params:
+                        p_name = p.getName()
+                        if p_name in param_replacements:
+                            new_val = param_replacements[p_name]
+                            # 使用 Burp 官方 API 安全替换参数，无论它在 URL 还是 Body 还是 Cookie 中
+                            new_param = helpers.buildParameter(p_name, new_val, p.getType())
+                            new_req_low = helpers.updateParameter(new_req_low, new_param)
+
             self._e._low_rr = self._c._callbacks.makeHttpRequest(service, new_req_low)
             if self._e._low_rr and self._e._low_rr.getResponse():
                 resp = self._e._low_rr.getResponse()
@@ -522,7 +550,7 @@ class AnalysisTask(Runnable):
             else:
                 self._e._len_low = "Error"
 
-            # 2. Unauth
+            # 2. Unauth (未授权剔除)
             unauth_headers = list(headers)
             unauth_cfg = self._c._ui.txt_unauth_headers.getText().strip()
             if unauth_cfg:
@@ -596,7 +624,7 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IMessageEditorController,
         self._callbacks.addSuiteTab(self)
         self._callbacks.registerHttpListener(self)
         self._callbacks.registerExtensionStateListener(self)
-        self._stdout.println("AiYue_Pro Loaded!")
+        self._stdout.println("AiYue_Pro v2 (With Static Filter & Param Replace) Loaded!")
 
     def extensionUnloaded(self):
         self._thread_pool.shutdown()
@@ -628,10 +656,20 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IMessageEditorController,
             if h in str(url.getHost()): host_match = True; break
         if not host_match: return
 
+        # Method 过滤
         method_filter = self._ui.txt_filter_method.getText().strip()
         if method_filter:
-            skip_methods = [m.strip().upper() for m in method_filter.split(',')]
+            skip_methods = [m.strip().upper() for m in method_filter.split(',') if m.strip()]
             if req_info.getMethod().upper() in skip_methods: return
+
+        # ---> 新增: 静态资源后缀过滤 <---
+        ext_filter = self._ui.txt_filter_ext.getText().strip()
+        if ext_filter:
+            skip_exts = [e.strip().lower() for e in ext_filter.split(',') if e.strip()]
+            path = url.getPath().lower()
+            for ext in skip_exts:
+                ext_str = ext if ext.startswith('.') else '.' + ext
+                if path.endswith(ext_str): return
 
         path_filter = self._ui.txt_filter_path.getText().strip()
         if path_filter:
